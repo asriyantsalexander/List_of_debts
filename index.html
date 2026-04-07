@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Обработка карточек задолженности</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;500&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --border: #2a2d3a;
+    --accent: #4f8ef7;
+    --accent-dim: rgba(79,142,247,0.12);
+    --success: #3ecf8e;
+    --error: #f76f6f;
+    --text: #e8eaf0;
+    --muted: #6b7280;
+  }
+
+  body {
+    font-family: 'IBM Plex Sans', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 48px;
+    width: 100%;
+    max-width: 560px;
+  }
+
+  .logo {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 32px;
+  }
+
+  h1 {
+    font-size: 24px;
+    font-weight: 500;
+    line-height: 1.3;
+    margin-bottom: 8px;
+  }
+
+  .subtitle {
+    font-size: 14px;
+    color: var(--muted);
+    margin-bottom: 40px;
+    line-height: 1.6;
+  }
+
+  .drop-zone {
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 40px 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+    margin-bottom: 24px;
+  }
+
+  .drop-zone:hover, .drop-zone.drag-over {
+    border-color: var(--accent);
+    background: var(--accent-dim);
+  }
+
+  .drop-zone input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    width: 100%;
+    height: 100%;
+  }
+
+  .drop-icon {
+    width: 48px;
+    height: 48px;
+    margin: 0 auto 16px;
+    background: var(--accent-dim);
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .drop-icon svg { color: var(--accent); }
+
+  .drop-label {
+    font-size: 15px;
+    font-weight: 500;
+    margin-bottom: 6px;
+  }
+
+  .drop-hint {
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  .file-name {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--success);
+    margin-top: 12px;
+    display: none;
+  }
+
+  .btn {
+    width: 100%;
+    padding: 14px;
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 10px;
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: opacity 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .btn:hover { opacity: 0.88; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .status {
+    margin-top: 20px;
+    padding: 14px 16px;
+    border-radius: 10px;
+    font-size: 14px;
+    display: none;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .status.loading {
+    display: flex;
+    background: var(--accent-dim);
+    border: 1px solid rgba(79,142,247,0.25);
+    color: var(--accent);
+  }
+
+  .status.success {
+    display: flex;
+    background: rgba(62,207,142,0.1);
+    border: 1px solid rgba(62,207,142,0.25);
+    color: var(--success);
+  }
+
+  .status.error {
+    display: flex;
+    background: rgba(247,111,111,0.1);
+    border: 1px solid rgba(247,111,111,0.25);
+    color: var(--error);
+  }
+
+  .spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .formats {
+    margin-top: 24px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .fmt-tag {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.05);
+    color: var(--muted);
+    border: 1px solid var(--border);
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">Люберецкая теплосеть</div>
+  <h1>Обработка карточек задолженности</h1>
+  <p class="subtitle">Загрузите архив с PDF-карточками. Система автоматически извлечёт данные и сформирует таблицу Excel.</p>
+
+  <form id="uploadForm">
+    <div class="drop-zone" id="dropZone">
+      <input type="file" id="fileInput" name="archive" accept=".rar,.zip,.7z">
+      <div class="drop-icon">
+        <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+      </div>
+      <div class="drop-label">Перетащите архив или нажмите для выбора</div>
+      <div class="drop-hint">Максимальный размер: 200 МБ</div>
+      <div class="file-name" id="fileName"></div>
+    </div>
+
+    <button type="submit" class="btn" id="submitBtn" disabled>
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+      </svg>
+      Сформировать таблицу
+    </button>
+  </form>
+
+  <div class="status" id="status"></div>
+
+  <div class="formats">
+    <span class="fmt-tag">.rar</span>
+    <span class="fmt-tag">.zip</span>
+    <span class="fmt-tag">.7z</span>
+  </div>
+</div>
+
+<script>
+const fileInput  = document.getElementById('fileInput');
+const dropZone   = document.getElementById('dropZone');
+const fileName   = document.getElementById('fileName');
+const submitBtn  = document.getElementById('submitBtn');
+const statusEl   = document.getElementById('statusEl') || document.getElementById('status');
+const form       = document.getElementById('uploadForm');
+
+function setFile(file) {
+  if (!file) return;
+  fileName.textContent = file.name;
+  fileName.style.display = 'block';
+  submitBtn.disabled = false;
+}
+
+fileInput.addEventListener('change', () => setFile(fileInput.files[0]));
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file) { fileInput.files = e.dataTransfer.files; setFile(file); }
+});
+
+const status = document.getElementById('status');
+
+function showStatus(type, msg) {
+  status.className = 'status ' + type;
+  if (type === 'loading') {
+    status.innerHTML = `<div class="spinner"></div><span>${msg}</span>`;
+  } else {
+    const icon = type === 'success'
+      ? '<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>'
+      : '<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+    status.innerHTML = icon + `<span>${msg}</span>`;
+  }
+}
+
+form.addEventListener('submit', async e => {
+  e.preventDefault();
+  const file = fileInput.files[0];
+  if (!file) return;
+
+  submitBtn.disabled = true;
+  showStatus('loading', 'Обрабатываем карточки, это займёт около минуты...');
+
+  const formData = new FormData();
+  formData.append('archive', file);
+
+  try {
+    const res = await fetch('/process', { method: 'POST', body: formData });
+
+    if (!res.ok) {
+      const err = await res.json();
+      showStatus('error', err.error || 'Произошла ошибка');
+      submitBtn.disabled = false;
+      return;
+    }
+
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'задолженность.xlsx';
+    a.click();
+    URL.revokeObjectURL(url);
+
+    showStatus('success', 'Готово! Файл загружен.');
+  } catch (err) {
+    showStatus('error', 'Ошибка соединения с сервером');
+  }
+
+  submitBtn.disabled = false;
+});
+</script>
+</body>
+</html>
