@@ -30,107 +30,116 @@ def prev_11th(d):
     if m == 0: m = 12; y -= 1
     return f"11.{m:02d}.{y}"
  
+def detect_columns(text):
+    """
+    Dynamically detect service column order from PDF header.
+    Returns list of roles: 'teplo', 'pod', 'nos', 'nos_pov', 'skip', 'итого'
+    Works for both Люберецкая теплосеть and ДМУП ЭКПО card formats.
+    """
+    m = re.search(r'периодам\n(.*?)Сальдо на', text, re.DOTALL)
+    if not m:
+        return None
+    raw = re.sub(r'\n+', ' ', m.group(1)).strip()
+ 
+    # Order matters: longer/more specific patterns must come first
+    patterns = [
+        (r'Горячее в/с \(носитель\)\s*\(Повышающий[\w\s,]*?\)', 'nos_pov'),
+        (r'ГВС носитель\s*\(повышающий[\w\s,]*?\)',              'nos_pov'),
+        (r'Холодное в/с\s*\(Повышающий[\w\s,]*?\)',              'skip'),
+        (r'Горячее в/с \(носитель\)',                             'nos'),
+        (r'Горячее в/с \(энергия\)',                              'pod'),
+        (r'Отопление',                                            'teplo'),
+        (r'Водоотведение',                                        'skip'),
+        (r'Холодное в/с',                                         'skip'),
+        (r'ИТОГО',                                                'итого'),
+    ]
+ 
+    found = []
+    for pattern, role in patterns:
+        for mf in re.finditer(pattern, raw, re.IGNORECASE):
+            found.append((mf.start(), role, mf.group()))
+    found.sort(key=lambda x: x[0])
+ 
+    result, last_end = [], 0
+    for pos, role, matched in found:
+        if pos >= last_end:
+            result.append(role)
+            last_end = pos + len(matched)
+    return result
+ 
+ 
+def parse_row(nums, cols):
+    """Map numeric values to (teplo, pod, tep) using column roles."""
+    svc_cols = [c for c in cols if c != 'итого']
+    teplo = sum(nums[i] for i, c in enumerate(svc_cols) if c == 'teplo'            and i < len(nums))
+    pod   = sum(nums[i] for i, c in enumerate(svc_cols) if c == 'pod'              and i < len(nums))
+    tep   = sum(nums[i] for i, c in enumerate(svc_cols) if c in ('nos', 'nos_pov') and i < len(nums))
+    return teplo, pod, tep
+ 
+ 
 def extract_card(pdf_path):
     r = PdfReader(pdf_path)
     text = ''.join(p.extract_text() for p in r.pages) + '\n'
-    hdr  = text[:800]
  
-    otp_count   = hdr.count('Отопление')
-    has_pov     = 'повышающий' in hdr
-    has_en      = 'Горячее в/с (энергия)' in hdr
-    has_nos     = 'Горячее в/с (носитель)' in hdr
-    has_otp     = 'Отопление' in hdr
-    triple_otp  = otp_count >= 3
-    dual_otp    = otp_count >= 2
-    gvs_first   = (has_en and has_otp and
-                   hdr.find('Горячее в/с (энергия)') < hdr.find('Отопление'))
-    en_before_nos = (has_en and has_nos and
-                     hdr.find('Горячее в/с (энергия)') < hdr.find('Горячее в/с (носитель)'))
+    cols = detect_columns(text)
+    if not cols:
+        return None
+ 
+    n_svc = len([c for c in cols if c != 'итого'])
  
     vp = r'\s+([-\d.]+)'
-    all_saldo, n_cols = [], 1
-    for nc in [6, 5, 4, 3, 2, 1]:
-        found = re.findall(r'Сальдо на (\d{2}\.\d{2}\.\d{4})' + vp*(nc+1), text)
+    all_saldo = []
+    for nc in range(9, 0, -1):
+        found = re.findall(r'Сальдо на (\d{2}\.\d{2}\.\d{4})' + vp * (nc + 1), text)
         if found:
-            all_saldo, n_cols = found, nc
+            all_saldo = found
             break
     if not all_saldo:
         return None
  
-    def parse(entry):
-        v   = [float(x) for x in entry[1:]]
-        svc = v[:-1]   # drop ИТОГО
- 
-        # Triple Отопление: ОТП1 | ГВС_эн | ГВС_нос | ГВС_нос_пов | ОТП2 | ОТП3 | ИТОГО
-        if triple_otp and n_cols == 6 and en_before_nos and not gvs_first:
-            otp1, en, nos, pov, otp2, otp3 = svc
-            return otp1 + otp2 + otp3, en, nos + pov
- 
-        # gvs_first: ГВС_эн | ОТП | ГВС_нос | ГВС_нос_пов | ГВС_нос2 | ИТОГО
-        if gvs_first and n_cols == 5:
-            en, otp, nos, pov, nos2 = svc
-            return otp, en, nos + pov + nos2
- 
-        # Dual Отопление + повышающий: ОТП1 | ГВС_нос | ГВС_эн | ГВС_нос_пов | ОТП2 | ИТОГО
-        if dual_otp and has_pov and n_cols == 5:
-            otp1, nos, en, pov, otp2 = svc
-            return otp1 + otp2, en, nos + pov
- 
-        # Dual Отопление without повышающий: ОТП1 | ГВС_нос | ГВС_эн | ОТП2 | ИТОГО
-        if dual_otp and not has_pov and n_cols == 4:
-            otp1, nos, en, otp2 = svc
-            return otp1 + otp2, en, nos
- 
-        # Standard 4 services with повышающий: ОТП | ГВС_нос | ГВС_эн | ГВС_нос_пов | ИТОГО
-        if has_pov and n_cols == 4:
-            otp, nos, en, pov = svc
-            return otp, en, nos + pov
- 
-        # Standard 3 services: ОТП | ГВС_нос | ГВС_эн | ИТОГО
-        if n_cols == 3:
-            otp, nos, en = svc
-            return otp, en, nos
- 
-        # Single service: ОТП | ИТОГО
-        return svc[0], 0.0, 0.0
+    def get_vals(entry):
+        return [float(x) for x in entry[1:]][:-1]  # drop ИТОГО
  
     last_date = all_saldo[-1][0]
     end_date  = last_day(last_date)
-    lv = parse(all_saldo[-1])
+ 
+    lv = parse_row(get_vals(all_saldo[-1]), cols)
     td, pd, ted = (max(0.0, x) for x in lv)
  
-    # First POSITIVE saldo per service
+    # First positive saldo date per service
     fps = [None, None, None]
     for e in all_saldo:
-        t, p, te = parse(e)
+        t, p, te = parse_row(get_vals(e), cols)
         dt = e[0]
         if fps[0] is None and t  > 0: fps[0] = dt
         if fps[1] is None and p  > 0: fps[1] = dt
         if fps[2] is None and te > 0: fps[2] = dt
     first_d = [prev_1st(x) if x else None for x in fps]
  
-    # Last peni saldo (remaining peni debt, not total charged)
-    peni_pat = r'Сальдо пени на конец периода' + vp*(n_cols+1)
+    # Last peni saldo (remaining debt, not total charged)
+    peni_pat = r'Сальдо пени на конец периода' + vp * (n_svc + 1)
     all_peni = re.findall(peni_pat, text)
     if all_peni:
-        lp = parse(['_'] + list(all_peni[-1]))
+        lp = parse_row([float(x) for x in all_peni[-1]][:-1], cols)
         tp, pp, tep_p = (max(0.0, x) for x in lp)
     else:
         tp = pp = tep_p = 0.0
  
-    # First positive peni per service — position-based scan (robust across environments)
+    # First positive peni date per service — position-based scan
     fpp = [None, None, None]
-    all_peni_matches  = list(re.finditer(r'Сальдо пени на конец периода' + vp*(n_cols+1), text))
-    all_saldo_matches = list(re.finditer(r'Сальдо на (\d{2}\.\d{2}\.\d{4})', text))
-    for pm in all_peni_matches:
-        next_sd = next((m.group(1) for m in all_saldo_matches if m.start() > pm.start()), None)
-        if not next_sd: continue
-        peni_start = prev_11th(next_sd)
-        pv = parse(['_'] + list(pm.groups()))
-        if fpp[0] is None and pv[0] > 0: fpp[0] = peni_start
-        if fpp[1] is None and pv[1] > 0: fpp[1] = peni_start
-        if fpp[2] is None and pv[2] > 0: fpp[2] = peni_start
-        if all(x is not None for x in fpp): break
+    pm_list = list(re.finditer(peni_pat, text))
+    sd_list = list(re.finditer(r'Сальдо на (\d{2}\.\d{2}\.\d{4})', text))
+    for pm in pm_list:
+        next_sd = next((m.group(1) for m in sd_list if m.start() > pm.start()), None)
+        if not next_sd:
+            continue
+        ps = prev_11th(next_sd)
+        pv = parse_row([float(x) for x in pm.groups()][:-1], cols)
+        if fpp[0] is None and pv[0] > 0: fpp[0] = ps
+        if fpp[1] is None and pv[1] > 0: fpp[1] = ps
+        if fpp[2] is None and pv[2] > 0: fpp[2] = ps
+        if all(x is not None for x in fpp):
+            break
  
     return dict(
         teplo_dolg=round(td, 2),  pod_dolg=round(pd, 2),   tep_dolg=round(ted, 2),
@@ -175,7 +184,8 @@ def build_xlsx(results, acc_order):
         return f"{start}\u2013{end}" if (start and val > 0) else None
  
     for row_i, ls in enumerate(acc_order, start=4):
-        if ls not in results: continue
+        if ls not in results:
+            continue
         d   = results[ls]
         end = d['end_date']
         fd  = d['first_d']
@@ -241,8 +251,9 @@ def process():
         for root, dirs, files in os.walk(extract_dir):
             for fname in files:
                 if fname.lower().endswith('.pdf'):
-                    pdfs.append((fname.replace('.pdf', '').replace('.PDF', ''),
-                                 os.path.join(root, fname)))
+                    ls = re.match(r'(\d+)', fname)
+                    if ls:
+                        pdfs.append((ls.group(1), os.path.join(root, fname)))
         pdfs.sort(key=lambda x: x[0])
  
         if not pdfs:
